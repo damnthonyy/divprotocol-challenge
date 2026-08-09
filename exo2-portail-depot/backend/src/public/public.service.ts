@@ -8,7 +8,9 @@ import {
 } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { AccessEvent, type DepositRequest } from '@prisma/client'
+import { InjectMetric } from '@willsoto/nestjs-prometheus'
 import * as argon2 from 'argon2'
+import { Counter } from 'prom-client'
 
 import type { Env } from '@/config/env.schema'
 import {
@@ -18,6 +20,7 @@ import {
   type PinPolicyOptions,
 } from '@/domain/pin-policy'
 import { computeStatus, isLinkUsable } from '@/domain/request-status'
+import { METRIC } from '@/observability/metrics'
 import { PrismaService } from '@/prisma/prisma.service'
 
 import { DepositSessionService } from './deposit-session.service'
@@ -39,6 +42,8 @@ export class PublicService {
     private readonly prisma: PrismaService,
     private readonly sessions: DepositSessionService,
     config: ConfigService<Env, true>,
+    @InjectMetric(METRIC.pinAttemptTotal) private readonly pinAttempts: Counter<string>,
+    @InjectMetric(METRIC.linkLockedTotal) private readonly linksLocked: Counter<string>,
   ) {
     this.pinPolicy = {
       maxAttempts: config.get('PIN_MAX_ATTEMPTS', { infer: true }),
@@ -75,6 +80,7 @@ export class PublicService {
     const result = registerAttempt(state, isCorrect, this.pinPolicy, now)
 
     if (result.outcome === 'locked') {
+      this.pinAttempts.inc({ outcome: 'locked' })
       await this.log(request.id, AccessEvent.UNLOCK_LOCKED, context)
       throw new HttpException(
         {
@@ -91,6 +97,10 @@ export class PublicService {
     })
 
     if (result.outcome === 'rejected') {
+      this.pinAttempts.inc({ outcome: 'failed' })
+      // Le passage a zero tentative restante est le moment ou un lien bascule :
+      // c'est cet evenement, et non chaque echec, qui merite d'etre suivi.
+      if (result.attemptsLeft === 0) this.linksLocked.inc()
       await this.log(request.id, AccessEvent.UNLOCK_FAILED, context)
       throw new ForbiddenException({
         message: rejectionMessage(result.attemptsLeft),
@@ -98,6 +108,7 @@ export class PublicService {
       })
     }
 
+    this.pinAttempts.inc({ outcome: 'succeeded' })
     await this.log(request.id, AccessEvent.UNLOCK_SUCCEEDED, context)
 
     return {
