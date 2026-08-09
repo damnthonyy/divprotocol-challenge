@@ -4,7 +4,7 @@ Un avocat crée une demande de dépôt, génère un lien public expirable proté
 et suit l'arrivée des pièces. Son client ouvre le lien sans compte, saisit le code, dépose ses
 documents et voit sa progression.
 
-**URL de production** : `https://REMPLACE_MOI.stage2-div.rayan-drissi.com`
+**URL de production** : https://antoine-mahassadi.stage2-div.rayan-drissi.com
 
 ---
 
@@ -237,6 +237,60 @@ fonctionne jusque-là. `make cert-renew-dry-run` valide cette chaîne sans conso
 ne compile jamais et n'héberge aucun code source — seulement `infra/` et `.env.prod`.
 
 **Monitoring** : `ssh -N -L 3000:127.0.0.1:21002 <user>@<serveur>` puis http://localhost:3000.
+
+### Consulter les logs
+
+Chaque service écrit sur sa sortie standard (aucun fichier de log sur disque) : `docker compose
+logs` suffit, en local comme en production. Les logs du backend sont en JSON structuré
+(identifiant de corrélation, secrets rédigés — `Authorization`, `X-Deposit-Token`, PIN, mots de
+passe).
+
+**En local** (`docker-compose.local.yml`) :
+
+```bash
+docker compose -f infra/docker-compose.local.yml logs -f backend    # suit en direct
+docker compose -f infra/docker-compose.local.yml logs --tail=100 frontend
+docker compose -f infra/docker-compose.local.yml logs -f            # tous les services
+```
+
+**En production**, directement en SSH sur le serveur, depuis `~/infra` :
+
+```bash
+ssh <user>@<serveur>
+cd ~/infra
+docker compose -f docker-compose.prod.yml --env-file .env.prod logs -f backend
+docker compose -f docker-compose.prod.yml --env-file .env.prod logs --tail=200 edge
+docker compose -f docker-compose.prod.yml --env-file .env.prod ps        # etat/sante de chaque service
+```
+
+`-f` suit en direct (`Ctrl+C` pour sortir), `--tail=N` limite à l'historique récent. Le nom du
+service (`backend`, `frontend`, `edge`, `postgres`, `minio`, `certbot`, `prometheus`, `grafana`)
+vient de `docker-compose.prod.yml`. Les logs JSON du backend se lisent plus confortablement en
+les passant dans `pino-pretty` si l'outil est disponible :
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env.prod logs backend | npx pino-pretty
+```
+
+### Images — GitHub Container Registry
+
+Publiées automatiquement par `.github/workflows/release.yml` à chaque push sur `master` ou sur
+un tag `v*` — jamais construites à la main.
+
+| Image | Registre | Dockerfile source |
+| --- | --- | --- |
+| [`ghcr.io/damnthonyy/div-portail-frontend`](https://github.com/damnthonyy/divprotocol-challenge/pkgs/container/div-portail-frontend) | GHCR | `frontend/Dockerfile` |
+| [`ghcr.io/damnthonyy/div-portail-backend`](https://github.com/damnthonyy/divprotocol-challenge/pkgs/container/div-portail-backend) | GHCR | `backend/Dockerfile` |
+
+Tags produits pour chaque image : `latest` (uniquement sur `master`), `sha-<commit-complet>`
+(traçabilité exacte d'un déploiement) et le tag Git lui-même sur un push `v*`. `IMAGE_TAG` dans
+`infra/.env.prod` choisit lequel `docker-compose.prod.yml` tire — `latest` par défaut, ou un SHA
+précis pour épingler un déploiement.
+
+```bash
+docker pull ghcr.io/damnthonyy/div-portail-frontend:latest
+docker pull ghcr.io/damnthonyy/div-portail-backend:latest
+```
 
 ---
 
