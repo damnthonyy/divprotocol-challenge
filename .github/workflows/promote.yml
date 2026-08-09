@@ -13,6 +13,13 @@ name: Promote
 # L'auto-merge de GitHub attend que les status checks requis passent (voir la
 # protection de branche sur `staging`) avant de merger reellement : ce n'est
 # pas un merge immediat inconditionnel.
+#
+# IMPORTANT : les pushes/PR crees avec le GITHUB_TOKEN automatique ne
+# redeclenchent JAMAIS d'autre workflow (garde-fou anti-boucle de GitHub).
+# Sans ca, la CI ne tournerait jamais sur la PR dev->staging ni sur le merge
+# vers staging, et la protection de branche laisserait passer un merge sans
+# aucun check execute. D'ou secrets.PROMOTE_TOKEN (PAT classique, scope
+# `repo`) a la place de github.token pour la creation de PR et le merge.
 
 on:
   push:
@@ -44,7 +51,7 @@ jobs:
       - name: Ouvre ou reutilise la PR de promotion
         id: pr
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PROMOTE_TOKEN }}
           HEAD: ${{ github.ref_name }}
           BASE: ${{ steps.target.outputs.base }}
         run: |
@@ -70,7 +77,7 @@ jobs:
       - name: Active l'auto-merge (dev -> staging uniquement)
         if: steps.target.outputs.automerge == 'true' && steps.pr.outputs.number != ''
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PROMOTE_TOKEN }}
         run: |
           gh pr merge "${{ steps.pr.outputs.number }}" \
             -R "${{ github.repository }}" \
