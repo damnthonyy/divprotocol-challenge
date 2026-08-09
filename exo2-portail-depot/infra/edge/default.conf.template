@@ -1,0 +1,116 @@
+# nginx de bord. C'est LUI qui termine TLS : le proxy frontal de la machine
+# partagee relaie le 443 en passthrough par SNI, il ne dechiffre rien.
+#
+# Les variables ${...} sont substituees au demarrage par l'entrypoint de l'image
+# nginx, uniquement celles listees dans NGINX_ENVSUBST_FILTER (voir compose) :
+# les variables nginx natives comme $uri ou $host ne sont pas touchees.
+
+# HSTS conditionnel : voir security-headers.conf. `map` est le seul moyen d'avoir
+# un en-tete optionnel, `add_header` avec une valeur vide n'emet rien.
+map $host $hsts_header {
+  default "";
+  ~. "${HSTS_VALUE}";
+}
+
+# Resolution DNS differee a la requete : la stack doit pouvoir demarrer meme si le
+# backend n'est pas encore pret. Sans cela, nginx refuse de demarrer si un upstream
+# est introuvable au boot — et le deploiement one-click echoue sur un ordre de
+# demarrage.
+resolver ${NGINX_RESOLVER} ipv6=off valid=10s;
+
+# --- HTTP : challenge ACME et redirection --------------------------------------
+server {
+  listen 80;
+  server_name ${PUBLIC_DOMAIN};
+
+  # Le challenge http-01 arrive ici, relaye par en-tete Host depuis le port 80 de
+  # la machine. C'est ce qui rend l'emission possible malgre le passthrough TLS.
+  #
+  # CE BLOC DOIT RESTER AVANT LA REDIRECTION. Rediriger /.well-known vers HTTPS
+  # casserait le renouvellement automatique dans 60 jours — silencieusement,
+  # puisque tout continue de fonctionner jusque-la.
+  location ^~ /.well-known/acme-challenge/ {
+    root /var/www/certbot;
+    default_type "text/plain";
+    try_files $uri =404;
+  }
+
+  # Sonde locale en clair : permet de verifier que le service repond sur son port
+  # sans dependre du certificat. C'est le premier reflexe de diagnostic quand la
+  # requete traverse un proxy.
+  location = /healthz {
+    access_log off;
+    default_type text/plain;
+    return 200 "edge ok\n";
+  }
+
+  location / {
+    return 301 https://$host$request_uri;
+  }
+}
+
+# --- HTTPS : terminaison TLS et routage ----------------------------------------
+server {
+  listen 443 ssl;
+  http2 on;
+  server_name ${PUBLIC_DOMAIN};
+
+  ssl_certificate     /etc/letsencrypt/live/${PUBLIC_DOMAIN}/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/${PUBLIC_DOMAIN}/privkey.pem;
+
+  ssl_protocols TLSv1.2 TLSv1.3;
+  ssl_prefer_server_ciphers off;
+  ssl_session_cache shared:SSL:10m;
+  ssl_session_timeout 1d;
+  ssl_session_tickets off;
+
+  include /etc/nginx/snippets/security-headers.conf;
+
+  gzip on;
+  gzip_types text/css application/javascript application/json image/svg+xml;
+  gzip_min_length 1024;
+
+  location = /healthz {
+    access_log off;
+    default_type text/plain;
+    return 200 "edge ok\n";
+  }
+
+  # L'API est routee directement vers NestJS, sans traverser le nginx du frontend :
+  # un saut de moins sur le chemin des uploads, qui sont le trafic le plus lourd.
+  location /api/ {
+    include /etc/nginx/snippets/security-headers.conf;
+
+    set $api_upstream "${BACKEND_HOST}";
+    rewrite ^/api/(.*)$ /$1 break;
+    proxy_pass http://$api_upstream;
+
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    # Les depots de pieces sont lourds et lents. `proxy_request_buffering off`
+    # fait transiter le flux au lieu de le materialiser sur le disque de l'edge —
+    # l'enonce interdit d'ecrire les fichiers sur le disque local.
+    client_max_body_size 25m;
+    proxy_request_buffering off;
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
+  }
+
+  # Tout le reste : le SPA, servi par l'image frontend.
+  location / {
+    include /etc/nginx/snippets/security-headers.conf;
+
+    set $app_upstream "${FRONTEND_HOST}";
+    proxy_pass http://$app_upstream;
+
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+  }
+}

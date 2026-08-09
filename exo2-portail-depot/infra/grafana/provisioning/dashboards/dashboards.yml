@@ -1,0 +1,19 @@
+# Chargement automatique des dashboards deposes dans grafana/dashboards/.
+#
+# Le dossier est volontairement vide pour l'instant : les dashboards seront
+# construits avec la session observabilite, une fois qu'on aura decide ce qui
+# merite d'etre mesure. Un dashboard vide vaut mieux qu'un dashboard importe
+# depuis grafana.com qu'on ne saurait pas defendre en entretien.
+apiVersion: 1
+
+providers:
+  - name: portail-depot
+    orgId: 1
+    folder: 'Portail de depot'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

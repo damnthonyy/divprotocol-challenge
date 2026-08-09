@@ -1,0 +1,6 @@
+# Le fichier de production ne vit que sur le serveur.
+.env.prod
+.env.prod.local
+
+# Temoin depose par `make cert-staging`, local a chaque machine.
+.cert-staging-ok

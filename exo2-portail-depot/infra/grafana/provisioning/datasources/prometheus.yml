@@ -1,0 +1,16 @@
+# Datasource provisionnee au demarrage : aucun clic dans l'interface, ce qui est
+# necessaire pour que `install.sh` produise une stack utilisable sans intervention.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    # `editable: false` : la configuration vit dans git, pas dans la base Grafana.
+    # Une modification faite a la main serait perdue au prochain deploiement sans
+    # que personne ne sache pourquoi.
+    editable: false
+    jsonData:
+      timeInterval: 15s
