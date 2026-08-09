@@ -3,6 +3,10 @@ import { z } from 'zod'
 
 import type { RequestStatus } from '@/domain/request-status'
 
+// La vue d'une piece est identique des deux cotes : elle est definie une fois,
+// dans le module requests, et reexportee ici plutot que dupliquee.
+export type { DepositFileView } from '@/requests/dto'
+
 export const unlockSchema = z.object({
   pin: z.string().regex(/^\d{4}$/, 'Code a quatre chiffres.'),
 })
