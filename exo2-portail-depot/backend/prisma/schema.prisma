@@ -1,0 +1,120 @@
+// Modele de donnees du portail de depot.
+//
+// Note de conception : le statut d'une demande (pending / complete / expired)
+// n'est PAS une colonne. Il est derive a la lecture depuis expiresAt, le nombre
+// de pieces et expectedFiles — voir src/domain/request-status.ts. Une colonne
+// denormalisee mentirait des qu'un lien expire, puisque rien n'ecrit en base a
+// cet instant : il faudrait une tache de fond, donc un point de panne de plus.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../node_modules/.prisma/client"
+}
+
+// Prisma 7 : l'URL de connexion ne vit plus ici mais dans prisma.config.ts,
+// et le client se branche via un driver adapter (voir src/prisma/prisma.service.ts).
+datasource db {
+  provider = "postgresql"
+}
+
+model Lawyer {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  cabinetName  String
+  createdAt    DateTime @default(now())
+
+  requests DepositRequest[]
+
+  @@map("lawyers")
+}
+
+model DepositRequest {
+  id       String @id @default(cuid())
+  lawyerId String
+  lawyer   Lawyer @relation(fields: [lawyerId], references: [id], onDelete: Cascade)
+
+  label String
+
+  /// Nombre de pieces attendues. Sert a afficher une progression, ne plafonne
+  /// pas le depot : un client peut envoyer une piece de plus.
+  expectedFiles Int
+
+  /// Le PIN n'est jamais stocke en clair. Il n'est retourne qu'une fois, dans
+  /// la reponse de POST /requests, et ne peut plus etre relu ensuite.
+  pinHash String
+
+  /// Identifiant public du lien. Distinct de l'id interne : il circule par mail,
+  /// il ne doit pas reveler l'ordre de creation ni permettre d'enumerer.
+  publicToken String @unique
+
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  /// Compteurs de la politique PIN (src/domain/pin-policy.ts). En base et non en
+  /// memoire : le verrouillage doit survivre a un redemarrage et suivre le lien,
+  /// pas le client.
+  failedPinAttempts Int       @default(0)
+  lockedUntil       DateTime?
+
+  /// Revocation manuelle par l'avocat. Prime sur l'expiration.
+  revokedAt DateTime?
+
+  files      DepositFile[]
+  accessLogs AccessLog[]
+
+  @@index([lawyerId, createdAt])
+  @@map("deposit_requests")
+}
+
+model DepositFile {
+  id        String         @id @default(cuid())
+  requestId String
+  request   DepositRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  filename String
+  size     Int
+  mimeType String
+
+  /// Cle de l'objet dans le bucket. Le contenu ne transite jamais par le disque
+  /// local de l'application : il est stream vers le stockage objet.
+  objectKey String @unique
+
+  /// SHA-256 du contenu, calcule a la reception. Permet de detecter une
+  /// alteration et de reconnaitre un doublon.
+  checksum String
+
+  uploadedAt DateTime @default(now())
+
+  @@index([requestId, uploadedAt])
+  @@map("deposit_files")
+}
+
+/// Journal d'audit des acces au lien public (critere bonus).
+/// Repond a « qui a ouvert ce lien, quand, et depuis ou » — question qu'un
+/// cabinet se posera le jour ou une piece fuite.
+model AccessLog {
+  id        String         @id @default(cuid())
+  requestId String
+  request   DepositRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  event     AccessEvent
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime    @default(now())
+
+  @@index([requestId, createdAt])
+  @@map("access_logs")
+}
+
+enum AccessEvent {
+  LINK_VIEWED
+  UNLOCK_SUCCEEDED
+  UNLOCK_FAILED
+  UNLOCK_LOCKED
+  FILE_UPLOADED
+  FILE_REJECTED
+
+  @@map("access_event")
+}
