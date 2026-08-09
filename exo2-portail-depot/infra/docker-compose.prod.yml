@@ -95,6 +95,18 @@ services:
       # Le seed est idempotent : il ne recree rien s'il trouve deja un compte.
       RUN_SEED: ${RUN_SEED:-true}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Permet a l'API de publier les jours restants avant expiration du
+      # certificat. Absent ailleurs qu'en production : la jauge n'est alors pas
+      # exposee du tout, plutot que de valoir zero et d'alerter en continu.
+      TLS_CERT_PATH: /etc/letsencrypt/live/${PUBLIC_DOMAIN}/fullchain.pem
+    volumes:
+      # Lecture seule. Le volume entier est monte (Docker ne sait pas monter un
+      # seul fichier depuis un named volume) : privkey.pem est donc present dans
+      # le conteneur, mais le code ne lit jamais que fullchain.pem (TLS_CERT_PATH
+      # ci-dessus). Risque juge acceptable : montage en lecture seule, reseau
+      # interne uniquement, backend deja de confiance (il detient les secrets
+      # applicatifs).
+      - letsencrypt:/etc/letsencrypt:ro
     healthcheck:
       test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3000/health > /dev/null || exit 1']
       interval: 15s
