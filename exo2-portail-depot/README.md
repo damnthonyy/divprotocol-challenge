@@ -163,20 +163,85 @@ attrape les erreurs de contexte de slots, qui compilent mais cassent à l'exécu
 
 ## Observabilité
 
-**Fait** : `/health` (vérifie la base **et** le stockage objet — une API qui répond alors que
-le stockage est injoignable accepterait des dépôts qu'elle ne peut pas honorer), `/metrics` au
-format Prometheus, logs JSON avec identifiant de corrélation et rédaction des secrets
-(`Authorization`, `X-Deposit-Token`, mots de passe, PIN). Prometheus scrape le backend, Grafana
-est provisionné sur cette source.
+L'énoncé ne donne pas de liste de métriques, volontairement. Voici le critère que j'ai
+appliqué pour décider ce qui existe et ce qui alerte :
 
-> **TODO — périmètre d'observabilité.**
-> Le choix des métriques métier et des seuils d'alerte n'est pas encore fait, et cette section
-> sera complétée. L'énoncé annonce ce point comme un critère de discrimination plutôt qu'une
-> case à cocher : un TODO assumé vaut mieux qu'une liste de métriques importée d'un dashboard
-> générique que je ne saurais pas défendre. Les pistes à instruire : taux d'échec des dépôts,
-> latence du stockage objet, tentatives de PIN erronées par lien, saturation du bucket.
+> Une métrique mérite une **alerte** si elle répond à : *quelqu'un est-il en train d'être
+> bloqué, ou quelque chose d'irréversible vient-il de se produire ?* Tout le reste est un
+> panneau de dashboard.
 
----
+Pour ce produit, l'échec métier n'est pas « l'API est lente », c'est « un client n'a pas pu
+transmettre une pièce » ou « une pièce a disparu ».
+
+### Les cinq alertes
+
+| Alerte | Se déclenche sur | Pourquoi elle mérite de réveiller quelqu'un |
+| --- | --- | --- |
+| **Le stockage refuse les dépôts** | `increase(portail_upload_total{outcome="storage_error"}[5m]) > 0`, `for: 2m` | C'est l'action pour laquelle le produit existe. Un seul échec suffit : un client est reparti avec « réessaie » sans savoir si ça remarchera. |
+| **Pièces sans contenu** | `portail_inconsistent_files > 0`, `for: 5m` | Le pire échec possible, et le plus silencieux. Voir ci-dessous. |
+| **Certificat proche de l'expiration** | `< 20 jours`, `for: 1h` | Certbot renouvelle à 30 jours. Passer sous 20 signifie que le renouvellement échoue — panne qui ne se voit qu'au moment où tout tombe. |
+| **Force brute sur les PIN** | `> 20 échecs / 5 min`, `for: 5m` | 10 000 combinaisons seulement. Le verrouillage freine l'attaque mais ne prévient personne. |
+| **API injoignable** | `up{job="backend"} < 1`, `for: 2m`, `noData: Alerting` | Filet de sécurité : backend à terre, aucune autre règle ne peut se déclencher faute de données. |
+
+### La métrique dont je suis le plus satisfait
+
+`portail_inconsistent_files` compte les lignes `DepositFile` restées à `objectKey = 'pending'`.
+
+Cette valeur est posée **avant** l'envoi vers le stockage puis remplacée par la vraie clé. Si le
+process meurt entre les deux, une pièce apparaît côté avocat **sans contenu derrière**. Pour un
+cabinet, « le portail dit que vous l'avez envoyé, nous ne l'avons pas » porte sur des documents
+couverts par le secret professionnel, c'est irréversible si le client a supprimé son original,
+et c'est totalement silencieux. Le marqueur `'pending'` rend cette incohérence détectable
+gratuitement, sans réconciliation complète du bucket.
+
+### Deux défauts trouvés en testant, pas en relisant
+
+**1. Les compteurs sont initialisés à zéro au démarrage** (`metrics-refresher.service.ts`).
+Sans cela, trois échecs de stockage font surgir la série directement à 3 : Prometheus n'a jamais
+observé la valeur précédente, `increase(...[5m])` vaut **zéro**, et l'alerte ne se déclenche pas.
+Autrement dit, **la toute première panne — celle qui compte le plus — passait inaperçue**.
+Constaté en provoquant une vraie panne, pas en relisant le code.
+
+**2. La jauge du certificat est retirée du registre hors production.** `prom-client` initialise
+toute jauge à zéro et l'expose dès le démarrage : la règle « moins de 20 jours » se serait
+déclenchée en permanence en local et en CI. Une alerte qui hurle en continu est une alerte qu'on
+désactive — donc une alerte perdue le jour où elle compte.
+
+### Ce que je choisis de ne pas mesurer
+
+Aussi délibéré que le reste :
+
+- **CPU et mémoire par conteneur** — le serveur est partagé, on ne contrôle pas le bruit des
+  voisins. Une alerte pointerait la faute de quelqu'un d'autre.
+- **p99 de latence** — à ce trafic, le p99 est une requête unique. Du bruit déguisé en signal.
+  Le dashboard affiche médiane et p90.
+- **Nombre de requêtes** — métrique de vanité, aucune décision n'en découle.
+- **Les 4xx** — un `403` sur un PIN erroné est le fonctionnement attendu, pas un incident. Seules
+  les `5xx` sont suivies.
+- **Dashboards importés de grafana.com** — indéfendables en entretien.
+
+Une attention constante à la **cardinalité** : aucun label ne porte de valeur non bornée. Le label
+`route` porte le motif (`/public/:token/files`), jamais l'URL concrète — sinon chaque token public
+créerait une série temporelle et Prometheus s'effondrerait avant de rendre le moindre service.
+
+### Démontrer qu'une alerte se déclenche
+
+Vérifié de bout en bout, cycle complet :
+
+```bash
+docker compose -f infra/docker-compose.local.yml stop minio
+# puis tenter un dépôt depuis http://localhost:8080
+```
+
+Observé : `inactive` → `pending` à t+72 s → **`firing` à t+184 s** (conforme au `for: 2m`), puis
+retour à `inactive` environ 5 minutes après le redémarrage de MinIO. L'alerte est visible dans
+Grafana avec sa sévérité et son résumé.
+
+### Reste à faire
+
+Métriques de saturation du volume de stockage (un disque plein fait échouer tous les dépôts, et
+c'est une panne prévisible donc évitable), et une règle sur le taux de `5xx` une fois qu'on aura
+une ligne de base du trafic réel.
 
 ## Déploiement
 

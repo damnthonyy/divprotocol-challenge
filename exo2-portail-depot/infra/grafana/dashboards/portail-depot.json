@@ -1,0 +1,248 @@
+{
+  "uid": "portail-depot",
+  "title": "Portail de depot",
+  "description": "Etat du produit, pas etat des machines. Chaque panneau repond a une question qu'on se pose reellement en exploitation.",
+  "tags": ["portail", "metier"],
+  "timezone": "browser",
+  "editable": false,
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Le produit fonctionne-t-il ?",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "type": "stat",
+      "title": "Pieces sans contenu",
+      "description": "Lignes en base sans objet dans le stockage. Toute valeur non nulle signifie qu'un client croit avoir depose un document que le cabinet n'a pas. C'est le panneau a regarder en premier.",
+      "gridPos": { "h": 5, "w": 5, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "max(portail_inconsistent_files)", "refId": "A", "legendFormat": "incoherentes" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Echecs de stockage (1 h)",
+      "description": "Depots refuses par le stockage objet. Notre panne, pas celle du client.",
+      "gridPos": { "h": 5, "w": 5, "x": 5, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(increase(portail_upload_total{outcome=\"storage_error\"}[1h]))",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Certificat TLS",
+      "description": "Jours restants. Certbot renouvelle a 30 : passer sous 20 signifie que le renouvellement echoue.",
+      "gridPos": { "h": 5, "w": 5, "x": 10, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "min(portail_tls_cert_expiry_days)", "refId": "A" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "d",
+          "noValue": "hors production",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 20 },
+              { "color": "green", "value": 30 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    },
+    {
+      "type": "piechart",
+      "title": "Demandes par statut",
+      "description": "Contexte de lecture : dix echecs n'ont pas le meme sens selon qu'il y a trois ou trois cents demandes en cours.",
+      "gridPos": { "h": 5, "w": 9, "x": 15, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "portail_deposit_requests", "refId": "A", "legendFormat": "{{status}}" }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "legend": { "displayMode": "list", "placement": "right" } }
+    },
+    {
+      "type": "row",
+      "title": "Depots",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 6 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Depots par issue",
+      "description": "Les issues rejected_* sont NORMALES : un client envoie un .docx. Seule storage_error traduit une panne de notre cote. Les separer evite de lire un taux d'echec alarmant la ou tout va bien.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 7 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(portail_upload_total[5m]) * 60)",
+          "refId": "A",
+          "legendFormat": "{{outcome}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "fillOpacity": 15, "stacking": { "mode": "normal" } } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "storage_error" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "success" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }]
+          }
+        ]
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Duree d'un depot",
+      "description": "Mediane et 90e centile. Pas de p99 : a ce trafic, le p99 est une requete unique — du bruit deguise en signal.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 7 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(portail_upload_duration_seconds_bucket[5m])))",
+          "refId": "A",
+          "legendFormat": "mediane"
+        },
+        {
+          "expr": "histogram_quantile(0.9, sum by (le) (rate(portail_upload_duration_seconds_bucket[5m])))",
+          "refId": "B",
+          "legendFormat": "90e centile"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
+    },
+    {
+      "type": "row",
+      "title": "Securite",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 15 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Tentatives de code PIN",
+      "description": "Un rythme soutenu d'echecs signale une attaque par force brute. Le verrouillage la freine sans prevenir personne : ce graphe est le seul endroit ou elle se voit.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(portail_pin_attempt_total[5m]) * 60)",
+          "refId": "A",
+          "legendFormat": "{{outcome}}"
+        },
+        {
+          "expr": "sum(rate(portail_link_locked_total[5m]) * 60)",
+          "refId": "B",
+          "legendFormat": "liens verrouilles"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "Connexions avocat",
+      "description": "Une hausse des echecs sans hausse des succes signale du bourrage d'identifiants.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(portail_login_total[5m]) * 60)",
+          "refId": "A",
+          "legendFormat": "{{outcome}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    },
+    {
+      "type": "row",
+      "title": "API",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 24 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Requetes par route",
+      "description": "Le label route porte le motif, jamais l'URL concrete : sinon chaque token public creerait une serie et Prometheus s'effondrerait.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 25 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (route) (rate(portail_http_request_duration_seconds_count[5m]) * 60)",
+          "refId": "A",
+          "legendFormat": "{{route}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "Reponses 5xx",
+      "description": "Erreurs serveur par route. Les 4xx sont exclues : un 403 sur un PIN faux est le fonctionnement attendu.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 25 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (route) (rate(portail_http_request_duration_seconds_count{status=~\"5..\"}[5m]) * 60)",
+          "refId": "A",
+          "legendFormat": "{{route}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "fillOpacity": 20 },
+          "color": { "mode": "fixed", "fixedColor": "red" }
+        },
+        "overrides": []
+      }
+    }
+  ]
+}

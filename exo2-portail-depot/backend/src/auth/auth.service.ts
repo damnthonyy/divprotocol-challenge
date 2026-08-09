@@ -3,9 +3,12 @@ import { randomBytes } from 'node:crypto'
 import { Injectable, OnModuleInit, UnauthorizedException } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { JwtService } from '@nestjs/jwt'
+import { InjectMetric } from '@willsoto/nestjs-prometheus'
 import * as argon2 from 'argon2'
+import { Counter } from 'prom-client'
 
 import type { Env } from '@/config/env.schema'
+import { METRIC } from '@/observability/metrics'
 import { PrismaService } from '@/prisma/prisma.service'
 
 import type { SessionResponse } from './dto'
@@ -32,6 +35,7 @@ export class AuthService implements OnModuleInit {
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
     private readonly config: ConfigService<Env, true>,
+    @InjectMetric(METRIC.loginTotal) private readonly loginTotal: Counter<string>,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -49,12 +53,19 @@ export class AuthService implements OnModuleInit {
 
     if (!lawyer) {
       await argon2.verify(this.dummyHash, password).catch(() => false)
+      // Une seule issue `failed` : distinguer « compte inconnu » de « mot de
+      // passe faux" dans les metriques recreerait, dans Prometheus, l'oracle
+      // d'enumeration que le hachage leurre sert justement a fermer.
+      this.loginTotal.inc({ outcome: 'failed' })
       throw invalid
     }
 
     if (!(await argon2.verify(lawyer.passwordHash, password))) {
+      this.loginTotal.inc({ outcome: 'failed' })
       throw invalid
     }
+
+    this.loginTotal.inc({ outcome: 'succeeded' })
 
     const payload: LawyerJwtPayload = { sub: lawyer.id, email: lawyer.email, aud: 'lawyer' }
 

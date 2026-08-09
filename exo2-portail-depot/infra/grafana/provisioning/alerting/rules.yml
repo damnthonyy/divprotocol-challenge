@@ -1,0 +1,230 @@
+# Regles d'alerte, versionnees avec le reste de la configuration.
+#
+# Cinq regles, pas douze. Le critere retenu pour qu'une regle existe :
+#
+#     « Est-ce que quelqu'un est bloque MAINTENANT, ou est-ce que quelque chose
+#       d'irreversible vient de se produire ? »
+#
+# Si la reponse est non, la metrique merite un panneau de dashboard, pas une
+# alerte. Une alerte qui se declenche pour rien est une alerte qu'on finit par
+# ignorer — et donc une alerte perdue le jour ou elle aurait compte.
+
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: portail-depot
+    folder: 'Portail de depot'
+    interval: 1m
+    rules:
+      # ---------------------------------------------------------------------
+      # 1. Le stockage objet refuse les pieces.
+      #
+      # Le depot est l'action pour laquelle ce produit existe. Un seul echec de
+      # stockage sur cinq minutes suffit a alerter : ce n'est pas un incident
+      # marginal, c'est un client a qui l'on a dit « reessaie » sans savoir si
+      # cela remarchera.
+      #
+      # `rejected_type` et `rejected_size` sont volontairement EXCLUS : un client
+      # qui envoie un .docx est un comportement normal, pas une panne.
+      # ---------------------------------------------------------------------
+      - uid: depot-storage-error
+        title: Le stockage objet refuse les depots
+        condition: seuil
+        for: 2m
+        labels:
+          severite: critique
+        annotations:
+          summary: 'Des clients ne parviennent pas a deposer leurs pieces.'
+          description: >-
+            increase(portail_upload_total{outcome="storage_error"}[5m]) est non nul.
+            Le stockage objet est injoignable ou refuse les ecritures.
+            Verifier : docker compose logs minio ; puis l'espace disque du volume.
+        data:
+          - refId: requete
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: 'sum(increase(portail_upload_total{outcome="storage_error"}[5m]))'
+              instant: true
+              refId: requete
+          - refId: seuil
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: requete
+              conditions:
+                - evaluator: { type: gt, params: [0] }
+              refId: seuil
+        noDataState: OK
+        execErrState: Alerting
+
+      # ---------------------------------------------------------------------
+      # 2. Une piece est enregistree sans contenu derriere.
+      #
+      # LA regle la plus importante. Une ligne DepositFile restee a
+      # `objectKey='pending'` signifie qu'un client voit sa piece comme envoyee
+      # alors que le cabinet n'a rien.
+      #
+      # Sur des documents couverts par le secret professionnel, c'est le pire
+      # echec possible : silencieux, et irreversible si le client a supprime son
+      # original. Toute valeur non nulle est anormale — pas de tolerance.
+      # ---------------------------------------------------------------------
+      - uid: pieces-incoherentes
+        title: Pieces enregistrees sans contenu dans le stockage
+        condition: seuil
+        for: 5m
+        labels:
+          severite: critique
+        annotations:
+          summary: 'Une piece est listee cote avocat mais absente du stockage.'
+          description: >-
+            portail_inconsistent_files > 0. Un envoi a ete interrompu entre
+            l'ecriture en base et l'ecriture dans le bucket.
+            Identifier les lignes : SELECT id, filename, "requestId", "uploadedAt"
+            FROM deposit_files WHERE "objectKey" = 'pending';
+            Puis prevenir le cabinet : le client concerne doit redeposer.
+        data:
+          - refId: requete
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: 'max(portail_inconsistent_files)'
+              instant: true
+              refId: requete
+          - refId: seuil
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: requete
+              conditions:
+                - evaluator: { type: gt, params: [0] }
+              refId: seuil
+        noDataState: OK
+        execErrState: Alerting
+
+      # ---------------------------------------------------------------------
+      # 3. Le certificat approche de son expiration.
+      #
+      # Le renouvellement automatique casse silencieusement : tout fonctionne
+      # pendant 60 jours, puis plus rien. Le piege classique est une redirection
+      # 301 qui avale le challenge ACME — on s'en premunit dans la configuration
+      # nginx, cette regle verifie que la premunition tient dans le temps.
+      #
+      # Seuil a 20 jours : certbot renouvelle a 30, il reste donc dix jours pour
+      # comprendre pourquoi le renouvellement n'a pas eu lieu.
+      # ---------------------------------------------------------------------
+      - uid: certificat-expiration
+        title: Le certificat TLS approche de son expiration
+        condition: seuil
+        for: 1h
+        labels:
+          severite: majeure
+        annotations:
+          summary: 'Le renouvellement automatique du certificat ne se fait pas.'
+          description: >-
+            Moins de 20 jours restants alors que certbot renouvelle a 30 :
+            le renouvellement echoue.
+            Diagnostiquer : make -C infra cert-renew-dry-run
+            Verifier surtout que /.well-known/acme-challenge/ n'est pas redirige.
+        data:
+          - refId: requete
+            relativeTimeRange: { from: 3600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: 'min(portail_tls_cert_expiry_days)'
+              instant: true
+              refId: requete
+          - refId: seuil
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: requete
+              conditions:
+                - evaluator: { type: lt, params: [20] }
+              refId: seuil
+        # NoData volontairement OK : hors production la jauge n'existe pas, et
+        # une alerte permanente en local serait desactivee, donc perdue.
+        noDataState: OK
+        execErrState: OK
+
+      # ---------------------------------------------------------------------
+      # 4. Force brute sur les codes PIN.
+      #
+      # Un PIN a 4 chiffres, c'est 10 000 combinaisons. Le verrouillage freine
+      # l'attaque mais ne previent personne : sans cette regle, une campagne
+      # contre les liens d'un cabinet passerait inapercue.
+      #
+      # Seuil a 20 echecs / 5 min : un client qui se trompe en atteint 5 avant
+      # d'etre verrouille, donc ce seuil ne peut pas etre atteint par un usage
+      # legitime isole.
+      # ---------------------------------------------------------------------
+      - uid: pin-force-brute
+        title: Tentatives de force brute sur les codes PIN
+        condition: seuil
+        for: 5m
+        labels:
+          severite: majeure
+        annotations:
+          summary: 'Rythme anormal de codes PIN errones.'
+          description: >-
+            Plus de 20 echecs sur 5 minutes. Croiser avec la table access_logs
+            (event = UNLOCK_FAILED) pour identifier les adresses et les liens vises.
+            Envisager de revoquer les liens concernes.
+        data:
+          - refId: requete
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: 'sum(increase(portail_pin_attempt_total{outcome="failed"}[5m]))'
+              instant: true
+              refId: requete
+          - refId: seuil
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: requete
+              conditions:
+                - evaluator: { type: gt, params: [20] }
+              refId: seuil
+        noDataState: OK
+        execErrState: OK
+
+      # ---------------------------------------------------------------------
+      # 5. L'API ne repond plus.
+      #
+      # Filet de securite : si le backend est a terre, aucune des regles
+      # ci-dessus ne peut se declencher, faute de donnees. Sans cette regle, la
+      # panne la plus grave serait la seule a passer inapercue.
+      # ---------------------------------------------------------------------
+      - uid: api-injoignable
+        title: L'API ne repond plus
+        condition: seuil
+        for: 2m
+        labels:
+          severite: critique
+        annotations:
+          summary: "Le portail est indisponible : plus aucune metrique ne remonte."
+          description: >-
+            Prometheus ne parvient plus a scraper le backend.
+            Verifier : docker compose ps ; docker compose logs backend
+        data:
+          - refId: requete
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: 'min(up{job="backend"})'
+              instant: true
+              refId: requete
+          - refId: seuil
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: requete
+              conditions:
+                - evaluator: { type: lt, params: [1] }
+              refId: seuil
+        # Ici NoData DOIT alerter : plus de donnees du tout est precisement le
+        # symptome que cette regle cherche a attraper.
+        noDataState: Alerting
+        execErrState: Alerting

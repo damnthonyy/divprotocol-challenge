@@ -2,8 +2,26 @@
 # necessaire pour que `install.sh` produise une stack utilisable sans intervention.
 apiVersion: 1
 
+# Supprimee avant d'etre recreee a chaque demarrage.
+#
+# Sans cela, une stack ayant deja tourne AVANT que l'uid ne soit fige garde une
+# datasource « Prometheus » avec un uid genere. Le provisioning tente alors de
+# changer l'uid d'une ressource existante, ce que Grafana refuse — et le
+# conteneur ne demarre plus du tout, avec un message qui ne dit pas pourquoi
+# (« data source not found »).
+#
+# Une datasource ne porte aucun etat : la supprimer et la recreer est sans effet
+# de bord, et rend le provisioning idempotent d'une version a l'autre.
+deleteDatasources:
+  - name: Prometheus
+    orgId: 1
+
 datasources:
   - name: Prometheus
+    # UID fixe : les regles d'alerte provisionnees le referencent explicitement.
+    # Sans lui, Grafana en genere un aleatoire a chaque installation et les
+    # regles pointent dans le vide.
+    uid: prometheus
     type: prometheus
     access: proxy
     url: http://prometheus:9090
