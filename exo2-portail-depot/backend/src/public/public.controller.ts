@@ -1,8 +1,26 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Req } from '@nestjs/common'
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  ParseFilePipeBuilder,
+  Post,
+  Req,
+  UploadedFile,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common'
+import { FileInterceptor } from '@nestjs/platform-express'
 import { Throttle } from '@nestjs/throttler'
 import type { Request } from 'express'
 
-import { UnlockDto, type PublicPreviewView, type UnlockResponse } from './dto'
+import type { DepositJwtPayload } from './deposit-session.service'
+import { CurrentDeposit, DepositTokenGuard } from './deposit-token.guard'
+import { DepositService, type UploadedFileInput } from './deposit.service'
+import { UnlockDto, type DepositFileView, type PublicPreviewView, type UnlockResponse } from './dto'
 import { PublicService, type RequesterContext } from './public.service'
 
 function requesterOf(request: Request): RequesterContext {
@@ -16,7 +34,10 @@ function requesterOf(request: Request): RequesterContext {
 
 @Controller('public')
 export class PublicController {
-  constructor(private readonly publicService: PublicService) {}
+  constructor(
+    private readonly publicService: PublicService,
+    private readonly deposit: DepositService,
+  ) {}
 
   @Get(':token')
   preview(@Param('token') token: string, @Req() req: Request): Promise<PublicPreviewView> {
@@ -43,5 +64,35 @@ export class PublicController {
     @Req() req: Request,
   ): Promise<UnlockResponse> {
     return this.publicService.unlock(token, body.pin, requesterOf(req))
+  }
+
+  /**
+   * Depot d'une piece.
+   *
+   * `memoryStorage` et non `diskStorage` : l'enonce interdit d'ecrire sur le
+   * disque local de l'application. Le tampon part directement vers le stockage
+   * objet. La limite Multer est le premier rempart — elle coupe la reception
+   * avant d'avoir tout charge en memoire ; `file-policy` verifie ensuite.
+   */
+  @Post(':token/files')
+  @UseGuards(DepositTokenGuard)
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: undefined,
+      limits: { fileSize: 25 * 1024 * 1024, files: 1 },
+    }),
+  )
+  uploadFile(
+    @Param('token') token: string,
+    @CurrentDeposit() session: DepositJwtPayload,
+    @UploadedFile(new ParseFilePipeBuilder().build({ fileIsRequired: false }))
+    file: UploadedFileInput | undefined,
+    @Req() req: Request,
+  ): Promise<DepositFileView> {
+    if (!file) {
+      throw new BadRequestException({ message: 'Aucun fichier recu.', code: 'FILE_MISSING' })
+    }
+
+    return this.deposit.upload(token, session.sub, file, requesterOf(req))
   }
 }

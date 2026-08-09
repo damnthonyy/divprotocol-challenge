@@ -1,0 +1,149 @@
+# Stack complete en local, construite depuis les sources.
+# C'est ce que lance `./install.sh` sans argument — le scenario des evaluateurs :
+# clone sur une machine vierge, une commande, des URLs cliquables a la fin.
+#
+# Pas de TLS ici : en local on sert en clair sur 127.0.0.1. La chaine HTTPS vit
+# dans docker-compose.prod.yml, ou elle a un sens.
+
+name: div-portail
+
+services:
+  postgres:
+    image: postgres:17.7-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: portail
+      POSTGRES_PASSWORD: portail
+      POSTGRES_DB: portail
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U portail -d portail']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Tag epingle. MinIO Community Edition est archive depuis avril 2026 :
+  # RELEASE.2025-09-07 est la derniere image publiee, il n'y aura pas de `latest`
+  # a suivre. Le backend cible l'API S3 et non MinIO — voir backend/src/storage/.
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio-data:/data
+    ports:
+      # Loopback uniquement, comme les autres services locaux.
+      - '127.0.0.1:9001:9001' # console
+    healthcheck:
+      test: ['CMD-SHELL', 'mc ready local || exit 1']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        set -e
+        mc alias set local http://minio:9000 minioadmin minioadmin
+        mc mb --ignore-existing local/portail-depot
+        mc anonymous set none local/portail-depot
+        mc version enable local/portail-depot
+        echo "Bucket pret."
+
+  backend:
+    build:
+      context: ../backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgresql://portail:portail@postgres:5432/portail?schema=public
+      # Secrets de developpement, volontairement lisibles : cette stack n'est pas
+      # exposee. La production tire les siens de .env.prod.
+      JWT_SECRET: local-dev-secret-avocat-32-caracteres-min
+      DEPOSIT_JWT_SECRET: local-dev-secret-depot-32-caracteres-min
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET: portail-depot
+      S3_FORCE_PATH_STYLE: 'true'
+      # Migrations et seed joues a l'entrypoint : c'est ce qui rend le demarrage
+      # one-click, sans etape manuelle a enchainer.
+      RUN_SEED: 'true'
+      LOG_LEVEL: info
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3000/health > /dev/null || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+  frontend:
+    build:
+      context: ../frontend
+      args:
+        # Vide : le lien public affiche a l'avocat est alors derive de
+        # window.location.origin, donc toujours juste, quel que soit l'hote.
+        VITE_PUBLIC_BASE_URL: ''
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      BACKEND_HOST: backend:3000
+    ports:
+      # Loopback uniquement, meme en local : autant prendre l'habitude imposee
+      # par le serveur partage.
+      - '127.0.0.1:8080:80'
+
+  prometheus:
+    image: prom/prometheus:v3.13.2
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=15d'
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - '127.0.0.1:9090:9090'
+
+  grafana:
+    image: grafana/grafana:13.1.3
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_ANALYTICS_REPORTING_ENABLED: 'false'
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      # Le provider de dashboards lit ce chemin : sans ce montage, Grafana
+      # journalise une erreur au demarrage et ne charge rien.
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - '127.0.0.1:3001:3000'
+
+volumes:
+  postgres-data:
+  minio-data:
+  prometheus-data:
+  grafana-data:

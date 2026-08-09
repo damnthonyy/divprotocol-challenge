@@ -1,0 +1,43 @@
+# Configuration Prometheus.
+#
+# Cette session ne pose que la plomberie : Prometheus tourne, scrape le backend,
+# et Grafana est branche dessus. Le CHOIX des metriques metier et des seuils
+# d'alerte fait l'objet d'une session dediee — l'enonce en fait un critere de
+# discrimination, pas une checklist, et une alerte qui se declenche sur quelque
+# chose qui compte vaut mieux que douze regles decoratives.
+#
+# TODO (session observabilite) :
+#   - regles d'alerte dans rules/, referencees ci-dessous par `rule_files`
+#   - Alertmanager si l'on veut router les alertes ailleurs que dans Grafana
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    service: portail-depot
+
+# rule_files:
+#   - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  # L'API expose /metrics via @willsoto/nestjs-prometheus : metriques par defaut
+  # du process Node pour l'instant, metriques metier a venir.
+  - job_name: backend
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['backend:3000']
+        labels:
+          component: api
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # MinIO expose des metriques Prometheus sans authentification sur ce chemin
+  # lorsque MINIO_PROMETHEUS_AUTH_TYPE vaut "public". Laisse commente tant que ce
+  # n'est pas active : un target rouge en permanence rend le tableau de bord
+  # inutilisable et masque les vraies pannes.
+  # - job_name: minio
+  #   metrics_path: /minio/v2/metrics/cluster
+  #   static_configs:
+  #     - targets: ['minio:9000']

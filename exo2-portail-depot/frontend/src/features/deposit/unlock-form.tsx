@@ -23,18 +23,27 @@ export function UnlockForm({ token, onUnlocked }: UnlockFormProps) {
     onError: () => setPin(''),
   })
 
-  // 410 et 429 ne sont pas des erreurs de saisie : le lien est mort ou verrouille,
-  // reafficher le clavier PIN inviterait a insister pour rien.
-  const terminal = mutation.error?.status === 410 || mutation.error?.status === 429
+  const error = mutation.error
+
+  /**
+   * L'API renvoie 429 dans deux situations tres differentes :
+   *  - `PIN_LOCKED` : le lien est verrouille apres trop de codes errones ;
+   *  - `RATE_LIMITED` : simple limitation de debit, qui se leve en une minute.
+   *
+   * On se fie donc au `code` et pas au seul statut. Traiter les deux pareil
+   * afficherait une impasse definitive a quelqu'un qui n'a qu'a patienter.
+   */
+  const terminal = error?.status === 410 || error?.code === 'PIN_LOCKED'
 
   if (terminal) {
+    const expired = error?.status === 410
     return (
       <ErrorState
-        title={mutation.error?.status === 410 ? 'Ce lien a expire' : 'Lien verrouille'}
+        title={expired ? 'Ce lien a expire' : 'Lien verrouille'}
         description={
-          mutation.error?.status === 410
+          expired
             ? 'Demande un nouveau lien a ton avocat pour deposer tes pieces.'
-            : 'Trop de codes errones ont ete saisis. Contacte ton avocat.'
+            : (error?.message ?? 'Trop de codes errones ont ete saisis. Contacte ton avocat.')
         }
         icon="!"
       />

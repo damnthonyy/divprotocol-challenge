@@ -1,0 +1,125 @@
+name: CI
+
+# Les tests tournent a chaque push et sur chaque pull request.
+# Les deux applications sont testees en parallele : un echec du frontend ne doit
+# pas masquer un echec du backend, on veut les deux verdicts d'un coup.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [master, staging, dev]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+  
+defaults:
+  run:
+    working-directory: exo2-portail-depot
+
+jobs:
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: exo2-portail-depot/frontend/package-lock.json
+
+      - name: Installation
+        working-directory: exo2-portail-depot/frontend
+        run: npm ci
+
+      - name: Types des recipes Chakra
+        working-directory: exo2-portail-depot/frontend
+        # Les types generes ne sont pas commites : sans cette etape, le typecheck
+        # echoue sur les variantes de recipes.
+        run: npx chakra typegen src/theme/system.ts
+
+      - name: Lint
+        working-directory: exo2-portail-depot/frontend
+        run: npm run lint
+
+      - name: Typecheck
+        working-directory: exo2-portail-depot/frontend
+        run: npm run typecheck
+
+      - name: Tests
+        working-directory: exo2-portail-depot/frontend
+        run: npm run test
+
+      - name: Build
+        working-directory: exo2-portail-depot/frontend
+        run: npm run build
+
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+
+    # PostgreSQL pour les tests qui touchent la base. Les tests de domaine
+    # (expiration, PIN, transitions de statut) n'en ont pas besoin — ils sont
+    # purs — mais les e2e a venir en dependront.
+    services:
+      postgres:
+        image: postgres:17.7-alpine
+        env:
+          POSTGRES_USER: portail
+          POSTGRES_PASSWORD: portail
+          POSTGRES_DB: portail_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U portail"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://portail:portail@localhost:5432/portail_test?schema=public
+      JWT_SECRET: ci-secret-avocat-de-32-caracteres-minimum
+      DEPOSIT_JWT_SECRET: ci-secret-depot-de-32-caracteres-minimum
+      S3_ENDPOINT: http://localhost:9000
+      S3_ACCESS_KEY: ci
+      S3_SECRET_KEY: ci
+      S3_BUCKET: portail-depot
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: exo2-portail-depot/backend/package-lock.json
+
+      - name: Installation
+        working-directory: exo2-portail-depot/backend
+        run: npm ci
+
+      - name: Client Prisma
+        working-directory: exo2-portail-depot/backend
+        run: npx prisma generate
+
+      - name: Migrations
+        working-directory: exo2-portail-depot/backend
+        run: npx prisma migrate deploy
+
+      - name: Lint
+        working-directory: exo2-portail-depot/backend
+        run: npm run lint
+
+      - name: Typecheck
+        working-directory: exo2-portail-depot/backend
+        run: npx tsc --noEmit
+
+      - name: Tests
+        working-directory: exo2-portail-depot/backend
+        run: npm test
+
+      - name: Build
+        working-directory: exo2-portail-depot/backend
+        run: npm run build

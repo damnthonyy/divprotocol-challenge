@@ -1,0 +1,92 @@
+name: Release
+
+# Construit et publie les images sur GitHub Container Registry.
+# Le serveur ne compile jamais : il ne fait que `docker compose pull`.
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publier ${{ matrix.name }}
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      # Suffit a pousser sur GHCR avec GITHUB_TOKEN : aucun secret a gerer,
+      # rien a faire tourner manuellement.
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: frontend
+            context: exo2-portail-depot/frontend
+          - name: backend
+            context: exo2-portail-depot/backend
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Proprietaire en minuscules
+        id: owner
+        # GHCR refuse les majuscules dans un nom de paquet, alors que
+        # github.repository_owner conserve la casse du compte GitHub.
+        run: echo "value=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Connexion a GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Metadonnees et tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/div-portail-${{ matrix.name }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=long
+            type=ref,event=tag
+
+      - name: Build et publication
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          # Serveur x86_64. Construire aussi arm64 doublerait le temps de CI, et
+          # argon2 se compile depuis les sources sous emulation — plusieurs
+          # minutes de plus a chaque push pour une plateforme inutilisee.
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: false
+          # Sans ce cache, argon2 et les moteurs Prisma sont recompiles
+          # integralement a chaque push.
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+      - name: Recapitulatif
+        run: |
+          {
+            echo "### Image \`${{ matrix.name }}\` publiee"
+            echo ""
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

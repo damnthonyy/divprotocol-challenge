@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.json",
+  // Le build de production ne compile que `src` : inclure `test` et `prisma`
+  // ferait remonter la racine commune et produirait `dist/src/main.js`
+  // au lieu de `dist/main.js`.
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "test", "prisma", "**/*.spec.ts"]
+}
