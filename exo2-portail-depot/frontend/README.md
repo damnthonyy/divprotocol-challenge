@@ -3,23 +3,32 @@
 Interface du portail : espace avocat authentifié et parcours de dépôt anonyme.
 Chakra UI v3, conforme à la charte DIV Protocol.
 
-> État : le backend NestJS n'existe pas encore. L'application tourne sur des mocks
-> MSW qui implémentent la surface d'API cible. La couche d'appel (axios + zod) est
-> déjà la couche définitive — le branchement se fera par variable d'environnement.
+> État : branché sur le vrai backend NestJS. `VITE_ENABLE_MOCKS=false`, les appels
+> partent vers `/api`, relayé vers NestJS par le proxy Vite en développement et par
+> nginx en production — le code applicatif appelle donc la même URL des deux côtés,
+> et il n'y a de CORS à configurer nulle part.
+>
+> Les handlers MSW sont conservés : `VITE_ENABLE_MOCKS=true` permet de travailler
+> sur le front sans lancer la stack, et de provoquer les cas d'erreur à la demande.
 
 ## Démarrer
 
 ```bash
+# Depuis exo2-portail-depot/ : les dépendances du backend d'abord
+docker compose -f infra/docker-compose.dev.yml up -d
+(cd backend && npm install && npx prisma migrate dev && npm run seed && npm run start:dev)
+
+# Puis le frontend
 npm install
 cp .env.example .env
 npm run dev          # http://localhost:5173
 ```
 
-Compte de démonstration : `avocat@divprotocol.com` / `demo1234`.
+Compte de démonstration : `avocat@divprotocol.com` / `demo1234` (créé par le seed).
 
 | Commande | Effet |
 | --- | --- |
-| `npm run dev` | Serveur de développement, mocks MSW actifs |
+| `npm run dev` | Serveur de développement, `/api` relayé vers NestJS |
 | `npm run build` | Build de production dans `dist/` |
 | `npm run test` | Vitest |
 | `npm run typecheck` | `tsc -b --noEmit` |
@@ -95,12 +104,19 @@ L'énoncé les évalue explicitement, ils ne sont pas décoratifs :
   explication et action, jamais un écran blanc.
 - **Chargement** — skeletons sur les listes, `LoadingState` ailleurs, distinct du vide réel.
 - **Erreur** — message issu de l'API et bouton de reprise. Un lien expiré (`410`) ou
-  verrouillé (`429`) n'affiche plus le clavier PIN : insister n'aurait aucun effet.
+  verrouillé (`PIN_LOCKED`) n'affiche plus le clavier PIN : insister n'aurait aucun effet.
 - **Échec d'upload** — porté par la ligne du fichier concerné, avec son « Réessayer ».
   Un fichier qui échoue ne fait pas disparaître la progression des autres.
 
-Pour les provoquer en développement, modifier l'objet `chaos` dans
-`src/mocks/handlers.ts` : `failDashboard`, `emptyDashboard`, `flakyUpload`, `latencyMs`.
+Pour les provoquer sans backend, passer `VITE_ENABLE_MOCKS=true` puis modifier l'objet
+`chaos` dans `src/mocks/handlers.ts` : `failDashboard`, `emptyDashboard`, `flakyUpload`,
+`latencyMs`.
+
+**Un `429` ne veut pas dire la même chose selon son `code`.** L'API l'utilise pour le
+verrouillage du PIN (`PIN_LOCKED`, définitif jusqu'à expiration du verrou) et pour la
+limitation de débit (`RATE_LIMITED`, levée en une minute). `UnlockForm` se fie au `code`
+et non au statut : traiter les deux pareil afficherait une impasse à quelqu'un qui n'a
+qu'à patienter.
 
 ## Choix d'implémentation à défendre
 
