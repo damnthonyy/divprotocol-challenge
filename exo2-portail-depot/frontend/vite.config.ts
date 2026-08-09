@@ -12,6 +12,17 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    proxy: {
+      // Reproduit ce que fait nginx en production : `/api/*` est relaye vers
+      // NestJS et le prefixe est retire. Le code applicatif appelle donc la
+      // meme URL en developpement et en production, et il n'y a pas de CORS a
+      // configurer — ni ici, ni sur le serveur.
+      '/api': {
+        target: 'http://localhost:3000',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, ''),
+      },
+    },
   },
   test: {
     environment: 'jsdom',
