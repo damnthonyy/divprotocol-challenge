@@ -1,0 +1,77 @@
+name: Promote
+
+# Fait suivre automatiquement dev -> staging -> master.
+#
+#   push sur dev     -> ouvre/maj une PR dev->staging, et l'auto-merge des que
+#                        la CI passe (staging est un environnement de test,
+#                        pas de geste manuel necessaire).
+#   push sur staging -> ouvre/maj une PR staging->master, mais NE merge JAMAIS
+#                        automatiquement : merger sur master declenche release.yml
+#                        et donc la publication des images que le serveur de
+#                        production tire. Ce geste reste volontairement humain.
+#
+# L'auto-merge de GitHub attend que les status checks requis passent (voir la
+# protection de branche sur `staging`) avant de merger reellement : ce n'est
+# pas un merge immediat inconditionnel.
+
+on:
+  push:
+    branches: [dev, staging]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: promote-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine la branche cible
+        id: target
+        run: |
+          if [ "${{ github.ref_name }}" = "dev" ]; then
+            echo "base=staging" >> "$GITHUB_OUTPUT"
+            echo "automerge=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "base=master" >> "$GITHUB_OUTPUT"
+            echo "automerge=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Ouvre ou reutilise la PR de promotion
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD: ${{ github.ref_name }}
+          BASE: ${{ steps.target.outputs.base }}
+        run: |
+          number=$(gh pr list -R "${{ github.repository }}" \
+            --head "$HEAD" --base "$BASE" --state open \
+            --json number --jq '.[0].number // empty')
+
+          if [ -z "$number" ]; then
+            number=$(gh pr create -R "${{ github.repository }}" \
+              --head "$HEAD" --base "$BASE" \
+              --title "Promotion $HEAD -> $BASE" \
+              --body "PR automatique de promotion de \`$HEAD\` vers \`$BASE\`. Les nouveaux commits sur \`$HEAD\` s'y ajoutent tout seuls." \
+              --json number --jq '.number' 2>/dev/null || true)
+            # `gh pr create` n'accepte pas --json avant la 2.40 : filet de secours.
+            [ -z "$number" ] && number=$(gh pr list -R "${{ github.repository }}" --head "$HEAD" --base "$BASE" --state open --json number --jq '.[0].number')
+            echo "PR #$number creee ($HEAD -> $BASE)."
+          else
+            echo "PR #$number deja ouverte ($HEAD -> $BASE) — les nouveaux commits y sont deja."
+          fi
+
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+
+      - name: Active l'auto-merge (dev -> staging uniquement)
+        if: steps.target.outputs.automerge == 'true' && steps.pr.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr merge "${{ steps.pr.outputs.number }}" \
+            -R "${{ github.repository }}" \
+            --merge --auto
