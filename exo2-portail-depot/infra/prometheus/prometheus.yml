@@ -1,14 +1,13 @@
 # Configuration Prometheus.
 #
-# Cette session ne pose que la plomberie : Prometheus tourne, scrape le backend,
-# et Grafana est branche dessus. Le CHOIX des metriques metier et des seuils
-# d'alerte fait l'objet d'une session dediee — l'enonce en fait un critere de
-# discrimination, pas une checklist, et une alerte qui se declenche sur quelque
-# chose qui compte vaut mieux que douze regles decoratives.
+# Les regles d'alerte ne vivent PAS ici mais dans
+# grafana/provisioning/alerting/rules.yml : l'evaluation est faite par Grafana,
+# ce qui evite un conteneur Alertmanager de plus a operer sur une machine
+# partagee, et affiche l'alerte dans la meme interface que le graphe qui
+# l'explique.
 #
-# TODO (session observabilite) :
-#   - regles d'alerte dans rules/, referencees ci-dessous par `rule_files`
-#   - Alertmanager si l'on veut router les alertes ailleurs que dans Grafana
+# Le raisonnement derriere le choix des metriques est dans le README, section
+# Observabilite, et dans backend/src/observability/metrics.ts.
 
 global:
   scrape_interval: 15s
@@ -16,12 +15,10 @@ global:
   external_labels:
     service: portail-depot
 
-# rule_files:
-#   - /etc/prometheus/rules/*.yml
-
 scrape_configs:
-  # L'API expose /metrics via @willsoto/nestjs-prometheus : metriques par defaut
-  # du process Node pour l'instant, metriques metier a venir.
+  # L'API expose /metrics via @willsoto/nestjs-prometheus : metriques metier du
+  # portail (depots, PIN, connexions, coherence base/stockage) et metriques par
+  # defaut du process Node.
   - job_name: backend
     metrics_path: /metrics
     static_configs:
