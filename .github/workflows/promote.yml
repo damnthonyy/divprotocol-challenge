@@ -53,13 +53,13 @@ jobs:
             --json number --jq '.[0].number // empty')
 
           if [ -z "$number" ]; then
-            number=$(gh pr create -R "${{ github.repository }}" \
+            # `gh pr create` n'accepte pas --json : il affiche l'URL sur stdout.
+            # On requete `gh pr list` juste apres pour recuperer le numero.
+            gh pr create -R "${{ github.repository }}" \
               --head "$HEAD" --base "$BASE" \
               --title "Promotion $HEAD -> $BASE" \
-              --body "PR automatique de promotion de \`$HEAD\` vers \`$BASE\`. Les nouveaux commits sur \`$HEAD\` s'y ajoutent tout seuls." \
-              --json number --jq '.number' 2>/dev/null || true)
-            # `gh pr create` n'accepte pas --json avant la 2.40 : filet de secours.
-            [ -z "$number" ] && number=$(gh pr list -R "${{ github.repository }}" --head "$HEAD" --base "$BASE" --state open --json number --jq '.[0].number')
+              --body "PR automatique de promotion de \`$HEAD\` vers \`$BASE\`. Les nouveaux commits sur \`$HEAD\` s'y ajoutent tout seuls."
+            number=$(gh pr list -R "${{ github.repository }}" --head "$HEAD" --base "$BASE" --state open --json number --jq '.[0].number')
             echo "PR #$number creee ($HEAD -> $BASE)."
           else
             echo "PR #$number deja ouverte ($HEAD -> $BASE) — les nouveaux commits y sont deja."
