@@ -1,0 +1,66 @@
+# Modele nginx. L'entrypoint de l'image nginx substitue les variables listees
+# dans NGINX_ENVSUBST_FILTER (voir Dockerfile) : les variables nginx natives
+# comme $uri ou $host ne sont pas touchees.
+
+server {
+  listen 80;
+  server_name _;
+
+  root /usr/share/nginx/html;
+  index index.html;
+
+  include /etc/nginx/snippets/security-headers.conf;
+
+  gzip on;
+  gzip_types text/css application/javascript application/json image/svg+xml;
+  gzip_min_length 1024;
+
+  # Le conteneur doit pouvoir demarrer avant le backend : la resolution DNS est
+  # donc differee a la requete (proxy_pass avec variable) au lieu du demarrage.
+  resolver ${NGINX_RESOLVER} ipv6=off valid=10s;
+
+  location = /healthz {
+    access_log off;
+    default_type text/plain;
+    return 200 "ok\n";
+  }
+
+  # Les assets portent un hash de contenu : ils sont immuables.
+  location /assets/ {
+    include /etc/nginx/snippets/security-headers.conf;
+    # `expires` emettrait un second Cache-Control : une seule directive ici.
+    add_header Cache-Control "public, max-age=31536000, immutable";
+    try_files $uri =404;
+  }
+
+  # index.html ne doit jamais etre cache, sinon un deploiement passe inapercu.
+  location = /index.html {
+    include /etc/nginx/snippets/security-headers.conf;
+    add_header Cache-Control "no-store, must-revalidate";
+  }
+
+  # L'API est servie sous le meme domaine : ni CORS, ni cookie tiers.
+  location /api/ {
+    set $upstream "${BACKEND_HOST}";
+    rewrite ^/api/(.*)$ /$1 break;
+    proxy_pass http://$upstream;
+
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    # Les depots de pieces sont lourds et lents : on ne bufferise pas la requete
+    # et on laisse le temps au stockage objet de repondre.
+    client_max_body_size 25m;
+    proxy_request_buffering off;
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
+  }
+
+  # Routage cote client : toute URL inconnue retombe sur l'application.
+  location / {
+    try_files $uri $uri/ /index.html;
+  }
+}
